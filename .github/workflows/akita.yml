@@ -1,0 +1,39 @@
+name: Build akita (Pixel 8a)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: LTO mode
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+        default: thin
+      ksu_ref:
+        description: KernelSU-Next tag/commit (empty = latest tag)
+        type: string
+        required: false
+        default: ""
+  schedule:
+    - cron: '0 21 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-akita
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event_name != 'schedule' ||
+      vars.ENABLED_DEVICES == '' ||
+      contains(format(',{0},', vars.ENABLED_DEVICES), ',akita,')
+    uses: ./.github/workflows/build.yml
+    with:
+      device: akita
+      lto: ${{ inputs.lto || 'thin' }}
+      ksu_ref: ${{ inputs.ksu_ref || '' }}
