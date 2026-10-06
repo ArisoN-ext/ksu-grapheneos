@@ -1,0 +1,110 @@
+name: Release all devices
+
+on:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: LTO mode
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+        default: thin
+      ksu_ref:
+        description: KernelSU-Next tag/commit (empty = latest tag)
+        type: string
+        required: false
+        default: ""
+  schedule:
+    - cron: '0 21 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      devices: ${{ steps.matrix.outputs.devices }}
+    steps:
+      - id: matrix
+        env:
+          ENABLED_DEVICES: ${{ vars.ENABLED_DEVICES }}
+        run: |
+          set -euo pipefail
+          known=(pantah lynx shusky akita)
+          enabled="${ENABLED_DEVICES// /}"
+          selected=()
+          if [ -z "$enabled" ]; then
+            selected=("${known[@]}")
+          else
+            IFS=',' read -ra want <<< "$enabled"
+            for dev in "${known[@]}"; do
+              for w in "${want[@]}"; do
+                if [ "$w" = "$dev" ]; then
+                  selected+=("$dev")
+                fi
+              done
+            done
+          fi
+          if [ "${#selected[@]}" -eq 0 ]; then
+            echo "No devices selected; aborting." >&2
+            exit 1
+          fi
+          json="$(printf '%s\n' "${selected[@]}" | jq -R . | jq -sc .)"
+          echo "devices=$json" >> "$GITHUB_OUTPUT"
+          echo "Selected devices: $json"
+
+  build:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ${{ fromJSON(needs.setup.outputs.devices) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      device: ${{ matrix.device }}
+      lto: ${{ inputs.lto || 'thin' }}
+      ksu_ref: ${{ inputs.ksu_ref || '' }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ksu-*
+          path: dist
+
+      - name: Build release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          version=""
+          for d in dist/*/; do
+            device="$(cat "$d/device.txt")"
+            if [ -z "$version" ]; then
+              version="$(cat "$d/version.txt")"
+            fi
+            chmod +x "$d/install.sh"
+            ( cd "$d" && zip -r "$GITHUB_WORKSPACE/release/${device}.zip" . \
+                -x 'device.txt' -x 'version.txt' )
+          done
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          ls -l release
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="ksu-${VERSION}-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes \
+            release/*.zip

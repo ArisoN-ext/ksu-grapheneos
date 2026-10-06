@@ -144,6 +144,8 @@ jobs:
             test -f "out/${{ inputs.device }}/dist/$f" || { echo "missing artifact: $f"; exit 1; }
             cp "out/${{ inputs.device }}/dist/$f" "$GITHUB_WORKSPACE/artifacts/"
           done
+          printf '%s\n' "${{ inputs.device }}" > "$GITHUB_WORKSPACE/artifacts/device.txt"
+          printf '%s\n' "${KSU_TAG}" > "$GITHUB_WORKSPACE/artifacts/version.txt"
           ls -l "$GITHUB_WORKSPACE/artifacts"
 
       - name: Add install script
