@@ -33,7 +33,7 @@ jobs:
           ENABLED_DEVICES: ${{ vars.ENABLED_DEVICES }}
         run: |
           set -euo pipefail
-          known=(pantah lynx shusky akita)
+          known=(pantah lynx shusky akita raviole bluejay caimito comet tegu)
           enabled="${ENABLED_DEVICES// /}"
           selected=()
           if [ -z "$enabled" ]; then

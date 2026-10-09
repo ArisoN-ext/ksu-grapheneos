@@ -1,0 +1,33 @@
+name: Build tegu (Pixel 9a)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: LTO mode
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+        default: thin
+      ksu_ref:
+        description: KernelSU-Next tag/commit (empty = latest tag)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-tegu
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      device: tegu
+      lto: ${{ inputs.lto || 'thin' }}
+      ksu_ref: ${{ inputs.ksu_ref || '' }}

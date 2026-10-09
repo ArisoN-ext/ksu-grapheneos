@@ -14,7 +14,7 @@ on:
         default: ""
       artifacts:
         type: string
-        default: "boot.img dtbo.img vendor_dlkm.img system_dlkm.img vendor_kernel_boot.img"
+        default: ""
 
 permissions:
   contents: read
@@ -132,10 +132,25 @@ jobs:
               --local_ram_resources=12000 \
               --local_cpu_resources=4
 
+      - name: Resolve artifact list
+        env:
+          ARTIFACTS_INPUT: ${{ inputs.artifacts }}
+          DEVICE: ${{ inputs.device }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ARTIFACTS_INPUT" ]; then
+            artifacts="$ARTIFACTS_INPUT"
+          else
+            case "$DEVICE" in
+              raviole|bluejay) artifacts="boot.img dtbo.img vendor_dlkm.img" ;;
+              *) artifacts="boot.img dtbo.img vendor_dlkm.img system_dlkm.img vendor_kernel_boot.img" ;;
+            esac
+          fi
+          echo "ARTIFACTS=$artifacts" >> "$GITHUB_ENV"
+          echo "Artifacts: $artifacts"
+
       - name: Verify and stage artifacts
         working-directory: kernel_pixel_6.1
-        env:
-          ARTIFACTS: ${{ inputs.artifacts }}
         run: |
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/artifacts"
@@ -154,15 +169,22 @@ jobs:
           {
             printf '%s\n' '#!/usr/bin/env bash'
             printf '%s\n' 'set -euo pipefail'
-            printf '%s\n' 'cd "$(dirname "$0")"'
+            printf '%s\n' "cd \"\$(dirname \"\$0\")\""
             printf '%s\n' ''
             printf '%s\n' 'fastboot oem disable-verification'
-            printf '%s\n' 'fastboot flash boot boot.img'
-            printf '%s\n' 'fastboot flash dtbo dtbo.img'
-            printf '%s\n' 'fastboot flash vendor_kernel_boot vendor_kernel_boot.img'
-            printf '%s\n' 'fastboot reboot fastboot'
-            printf '%s\n' 'fastboot flash system_dlkm system_dlkm.img'
-            printf '%s\n' 'fastboot flash vendor_dlkm vendor_dlkm.img'
+            for f in boot dtbo vendor_kernel_boot; do
+              if echo " $ARTIFACTS " | grep -q " $f.img "; then
+                printf 'fastboot flash %s %s.img\n' "$f" "$f"
+              fi
+            done
+            if echo " $ARTIFACTS " | grep -qE " (system_dlkm|vendor_dlkm)\.img "; then
+              printf '%s\n' 'fastboot reboot fastboot'
+              for f in system_dlkm vendor_dlkm; do
+                if echo " $ARTIFACTS " | grep -q " $f.img "; then
+                  printf 'fastboot flash %s %s.img\n' "$f" "$f"
+                fi
+              done
+            fi
           } > "$GITHUB_WORKSPACE/artifacts/install.sh"
           chmod +x "$GITHUB_WORKSPACE/artifacts/install.sh"
           cat "$GITHUB_WORKSPACE/artifacts/install.sh"
