@@ -13,10 +13,15 @@
 
 | Device          | Model    |
 | --------------- | -------- |
+| Pixel 6 / 6 Pro | `raviole` |
+| Pixel 6a        | `bluejay` |
 | Pixel 7 / 7 Pro | `pantah` |
 | Pixel 7a        | `lynx`   |
 | Pixel 8 / 8 Pro | `shusky` |
 | Pixel 8a        | `akita`  |
+| Pixel 9 / 9 Pro / 9 Pro XL | `caimito` |
+| Pixel 9 Pro Fold | `comet` |
+| Pixel 9a        | `tegu`   |
 
 ## Builds
 
