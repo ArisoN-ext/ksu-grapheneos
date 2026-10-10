@@ -99,7 +99,7 @@ jobs:
           fi
           sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_PROTECT=y/' arch/arm64/configs/gki_defconfig
 
-      - name: Enable Droidspaces support (kABI patch)
+      - name: Enable Droidspaces support
         if: ${{ inputs.droidspaces }}
         working-directory: kernel_pixel_6.1/aosp
         run: |
@@ -118,6 +118,48 @@ jobs:
           test -f "$patch_file" || { echo "patch not found: $patch_file"; exit 1; }
           patch --dry-run -p1 --no-backup-if-mismatch < "$patch_file"
           patch -p1 --no-backup-if-mismatch < "$patch_file"
+
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          configs="CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_IPC_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_BINFMT_MISC=y
+          CONFIG_BINFMT_SCRIPT=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REJECT=y
+          CONFIG_NETFILTER_XT_TARGET_LOG=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_TMPFS_XATTR=y"
+          apply_config() {
+            local line="$1"
+            line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$line" ] && return 0
+            local key="${line%%=*}" value="${line#*=}"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+          while IFS= read -r line; do apply_config "$line"; done <<< "$configs"
+
+          # The kernel that actually runs is the GKI base image (boot.img), so these
+          # options must live in gki_defconfig. Editing gki_defconfig breaks its
+          # canonical-form check, so disable that check.
+          sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
+          grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki || { echo "failed to disable check_defconfig"; exit 1; }
           git diff --stat
 
       - name: Commit KernelSU-Next into ack submodule
@@ -137,51 +179,6 @@ jobs:
           fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
             commit -m "$msg"
-
-      - name: Add Droidspaces defconfig fragment
-        if: ${{ inputs.droidspaces }}
-        working-directory: kernel_pixel_6.1
-        run: |
-          set -euo pipefail
-          frag="private/devices/google/common/droidspaces_defconfig"
-          {
-            printf '%s\n' 'CONFIG_SYSVIPC=y'
-            printf '%s\n' 'CONFIG_POSIX_MQUEUE=y'
-            printf '%s\n' 'CONFIG_IPC_NS=y'
-            printf '%s\n' 'CONFIG_PID_NS=y'
-            printf '%s\n' 'CONFIG_DEVTMPFS=y'
-            printf '%s\n' 'CONFIG_BINFMT_MISC=y'
-            printf '%s\n' 'CONFIG_BINFMT_SCRIPT=y'
-            printf '%s\n' 'CONFIG_BINFMT_ELF=y'
-            printf '%s\n' 'CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y'
-            printf '%s\n' 'CONFIG_IP6_NF_NAT=y # nocheck'
-            printf '%s\n' 'CONFIG_IP6_NF_TARGET_MASQUERADE=y # nocheck'
-            printf '%s\n' 'CONFIG_NETFILTER_XT_TARGET_REJECT=y # nocheck'
-            printf '%s\n' 'CONFIG_NETFILTER_XT_TARGET_LOG=y # nocheck'
-            printf '%s\n' 'CONFIG_NETFILTER_XT_MATCH_RECENT=y # nocheck'
-            printf '%s\n' 'CONFIG_IP_SET=y # nocheck'
-            printf '%s\n' 'CONFIG_IP_SET_HASH_IP=y # nocheck'
-            printf '%s\n' 'CONFIG_IP_SET_HASH_NET=y # nocheck'
-            printf '%s\n' 'CONFIG_NETFILTER_XT_SET=y # nocheck'
-            printf '%s\n' 'CONFIG_TMPFS_POSIX_ACL=y # nocheck'
-            printf '%s\n' 'CONFIG_TMPFS_XATTR=y # nocheck'
-          } > "$frag"
-          common_build="private/devices/google/common/BUILD.bazel"
-          if ! grep -q "droidspaces_defconfig" "$common_build"; then
-            {
-              printf '\n'
-              printf 'exports_files(\n'
-              printf '    ["droidspaces_defconfig"],\n'
-              printf '    visibility = ["//private/devices/google:__subpackages__"],\n'
-              printf ')\n'
-            } >> "$common_build"
-          fi
-          for base in gs101 gs201 zuma zumapro; do
-            f="private/devices/google/$base/BUILD.bazel"
-            sed -i "s|defconfig_fragments = \[\"${base}_defconfig\"\]|defconfig_fragments = [\"${base}_defconfig\", \"//private/devices/google/common:droidspaces_defconfig\"]|" "$f"
-            grep -q "droidspaces_defconfig" "$f" || { echo "failed to patch $f"; exit 1; }
-          done
-          git diff --stat
 
       - name: Commit ack pointer in parent repo
         working-directory: kernel_pixel_6.1
