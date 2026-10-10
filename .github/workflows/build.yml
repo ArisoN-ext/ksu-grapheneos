@@ -153,7 +153,6 @@ jobs:
             printf '%s\n' 'CONFIG_BINFMT_MISC=y'
             printf '%s\n' 'CONFIG_BINFMT_SCRIPT=y'
             printf '%s\n' 'CONFIG_BINFMT_ELF=y'
-            printf '%s\n' 'CONFIG_USER_NS=y'
             printf '%s\n' 'CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y'
             printf '%s\n' 'CONFIG_IP6_NF_NAT=y # nocheck'
             printf '%s\n' 'CONFIG_IP6_NF_TARGET_MASQUERADE=y # nocheck'
