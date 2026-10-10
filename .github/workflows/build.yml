@@ -116,8 +116,8 @@ jobs:
           esac
           patch_file="$ds_dir/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${variant}.patch"
           test -f "$patch_file" || { echo "patch not found: $patch_file"; exit 1; }
-          patch --dry-run -p1 < "$patch_file"
-          patch -p1 < "$patch_file"
+          patch --dry-run -p1 --no-backup-if-mismatch < "$patch_file"
+          patch -p1 --no-backup-if-mismatch < "$patch_file"
           git diff --stat
 
       - name: Commit KernelSU-Next into ack submodule
