@@ -167,6 +167,16 @@ jobs:
             printf '%s\n' 'CONFIG_TMPFS_POSIX_ACL=y'
             printf '%s\n' 'CONFIG_TMPFS_XATTR=y'
           } > "$frag"
+          common_build="private/devices/google/common/BUILD.bazel"
+          if ! grep -q "droidspaces_defconfig" "$common_build"; then
+            {
+              printf '\n'
+              printf 'exports_files(\n'
+              printf '    ["droidspaces_defconfig"],\n'
+              printf '    visibility = ["//private/devices/google:__subpackages__"],\n'
+              printf ')\n'
+            } >> "$common_build"
+          fi
           for base in gs101 gs201 zuma zumapro; do
             f="private/devices/google/$base/BUILD.bazel"
             sed -i "s|defconfig_fragments = \[\"${base}_defconfig\"\]|defconfig_fragments = [\"${base}_defconfig\", \"//private/devices/google/common:droidspaces_defconfig\"]|" "$f"
