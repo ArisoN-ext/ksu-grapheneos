@@ -16,6 +16,18 @@ on:
         type: string
         required: false
         default: ""
+      droidspaces:
+        description: Enable Droidspaces support (experimental)
+        type: boolean
+        default: false
+      droidspaces_patch:
+        description: Droidspaces kABI patch variant
+        type: choice
+        options:
+          - default
+          - alt-123
+          - alt-345
+        default: default
   schedule:
     - cron: '0 21 * * 0'
 
@@ -67,12 +79,16 @@ jobs:
       device: ${{ matrix.device }}
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
+      droidspaces: ${{ inputs.droidspaces || false }}
+      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      DS_SUFFIX: ${{ inputs.droidspaces && '-ds' || '' }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -91,7 +107,7 @@ jobs:
               version="$(cat "$d/version.txt")"
             fi
             chmod +x "$d/install.sh"
-            ( cd "$d" && zip -r "$GITHUB_WORKSPACE/release/${device}.zip" . \
+            ( cd "$d" && zip -r "$GITHUB_WORKSPACE/release/${device}${DS_SUFFIX}.zip" . \
                 -x 'device.txt' -x 'version.txt' )
           done
           echo "VERSION=${version}" >> "$GITHUB_ENV"
@@ -102,7 +118,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="ksu-${VERSION}-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          TAG="ksu-${VERSION}${DS_SUFFIX}-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "$TAG" \
