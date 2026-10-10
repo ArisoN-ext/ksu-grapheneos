@@ -15,6 +15,15 @@ on:
       artifacts:
         type: string
         default: ""
+      droidspaces:
+        type: boolean
+        default: false
+      droidspaces_patch:
+        type: string
+        default: "default"
+      droidspaces_ref:
+        type: string
+        default: "v6.6.0"
 
 permissions:
   contents: read
@@ -90,6 +99,27 @@ jobs:
           fi
           sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_PROTECT=y/' arch/arm64/configs/gki_defconfig
 
+      - name: Enable Droidspaces support (kABI patch)
+        if: ${{ inputs.droidspaces }}
+        working-directory: kernel_pixel_6.1/aosp
+        run: |
+          set -euo pipefail
+          ds_dir="$RUNNER_TEMP/Droidspaces-OSS"
+          rm -rf "$ds_dir"
+          git clone --depth=1 --branch "${{ inputs.droidspaces_ref }}" \
+            https://github.com/ravindu644/Droidspaces-OSS.git "$ds_dir"
+          case "${{ inputs.droidspaces_patch }}" in
+            default) variant="6_7_8" ;;
+            alt-123) variant="1_2_3" ;;
+            alt-345) variant="3_4_5" ;;
+            *) variant="${{ inputs.droidspaces_patch }}" ;;
+          esac
+          patch_file="$ds_dir/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${variant}.patch"
+          test -f "$patch_file" || { echo "patch not found: $patch_file"; exit 1; }
+          patch --dry-run -p1 < "$patch_file"
+          patch -p1 < "$patch_file"
+          git diff --stat
+
       - name: Commit KernelSU-Next into ack submodule
         working-directory: kernel_pixel_6.1/aosp
         run: |
@@ -101,16 +131,60 @@ jobs:
 
           rm -rf KernelSU-Next/.git
           git add -A
+          msg="Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            msg="${msg} + Droidspaces kABI patch"
+          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
-            commit -m "Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
+            commit -m "$msg"
+
+      - name: Add Droidspaces defconfig fragment
+        if: ${{ inputs.droidspaces }}
+        working-directory: kernel_pixel_6.1
+        run: |
+          set -euo pipefail
+          frag="private/devices/google/common/droidspaces_defconfig"
+          {
+            printf '%s\n' 'CONFIG_SYSVIPC=y'
+            printf '%s\n' 'CONFIG_POSIX_MQUEUE=y'
+            printf '%s\n' 'CONFIG_IPC_NS=y'
+            printf '%s\n' 'CONFIG_PID_NS=y'
+            printf '%s\n' 'CONFIG_DEVTMPFS=y'
+            printf '%s\n' 'CONFIG_BINFMT_MISC=y'
+            printf '%s\n' 'CONFIG_BINFMT_SCRIPT=y'
+            printf '%s\n' 'CONFIG_BINFMT_ELF=y'
+            printf '%s\n' 'CONFIG_USER_NS=y'
+            printf '%s\n' 'CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y'
+            printf '%s\n' 'CONFIG_IP6_NF_NAT=y'
+            printf '%s\n' 'CONFIG_IP6_NF_TARGET_MASQUERADE=y'
+            printf '%s\n' 'CONFIG_NETFILTER_XT_TARGET_REJECT=y'
+            printf '%s\n' 'CONFIG_NETFILTER_XT_TARGET_LOG=y'
+            printf '%s\n' 'CONFIG_NETFILTER_XT_MATCH_RECENT=y'
+            printf '%s\n' 'CONFIG_IP_SET=y'
+            printf '%s\n' 'CONFIG_IP_SET_HASH_IP=y'
+            printf '%s\n' 'CONFIG_IP_SET_HASH_NET=y'
+            printf '%s\n' 'CONFIG_NETFILTER_XT_SET=y'
+            printf '%s\n' 'CONFIG_TMPFS_POSIX_ACL=y'
+            printf '%s\n' 'CONFIG_TMPFS_XATTR=y'
+          } > "$frag"
+          for base in gs101 gs201 zuma zumapro; do
+            f="private/devices/google/$base/BUILD.bazel"
+            sed -i "s|defconfig_fragments = \[\"${base}_defconfig\"\]|defconfig_fragments = [\"${base}_defconfig\", \"//private/devices/google/common:droidspaces_defconfig\"]|" "$f"
+            grep -q "droidspaces_defconfig" "$f" || { echo "failed to patch $f"; exit 1; }
+          done
+          git diff --stat
 
       - name: Commit ack pointer in parent repo
         working-directory: kernel_pixel_6.1
         run: |
           set -euo pipefail
-          git add common/ack
+          git add -A
+          msg="Update ack: KernelSU-Next ${KSU_TAG}"
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            msg="${msg} + Droidspaces ${{ inputs.droidspaces_patch }} (${{ inputs.droidspaces_ref }})"
+          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
-            commit -m "Update ack: KernelSU-Next ${KSU_TAG}"
+            commit -m "$msg"
           echo "--- git status (should be clean) ---"
           git status --short --ignore-submodules=none
           test -z "$(git status --porcelain --ignore-submodules=none)"
@@ -192,7 +266,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}-${{ github.run_number }}
+          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}${{ inputs.droidspaces && '-ds' || '' }}-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 30
           path: artifacts/

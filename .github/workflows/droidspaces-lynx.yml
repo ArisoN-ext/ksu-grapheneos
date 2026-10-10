@@ -1,0 +1,43 @@
+name: Build lynx + Droidspaces (test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: LTO mode
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+        default: thin
+      ksu_ref:
+        description: KernelSU-Next tag/commit (empty = latest tag)
+        type: string
+        required: false
+        default: ""
+      droidspaces_patch:
+        description: Droidspaces kABI patch variant
+        type: choice
+        options:
+          - default
+          - alt-123
+          - alt-345
+        default: default
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-lynx-droidspaces
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      device: lynx
+      lto: ${{ inputs.lto || 'thin' }}
+      ksu_ref: ${{ inputs.ksu_ref || '' }}
+      droidspaces: true
+      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
