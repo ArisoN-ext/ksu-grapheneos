@@ -28,6 +28,10 @@ on:
           - alt-123
           - alt-345
         default: default
+      release:
+        description: Create a GitHub Release (artifacts are always uploaded)
+        type: boolean
+        default: true
   schedule:
     - cron: '0 21 * * 0'
 
@@ -83,6 +87,7 @@ jobs:
       droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
 
   release:
+    if: ${{ github.event_name == 'schedule' || inputs.release }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
