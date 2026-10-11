@@ -15,6 +15,15 @@ on:
       artifacts:
         type: string
         default: ""
+      droidspaces:
+        type: boolean
+        default: true
+      droidspaces_patch:
+        type: string
+        default: "default"
+      droidspaces_ref:
+        type: string
+        default: "v6.6.0"
 
 permissions:
   contents: read
@@ -90,6 +99,91 @@ jobs:
           fi
           sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_PROTECT=y/' arch/arm64/configs/gki_defconfig
 
+      - name: Enable Droidspaces support
+        if: ${{ inputs.droidspaces }}
+        working-directory: kernel_pixel_6.1/aosp
+        run: |
+          set -euo pipefail
+          ds_dir="$RUNNER_TEMP/Droidspaces-OSS"
+          rm -rf "$ds_dir"
+          git clone --depth=1 --branch "${{ inputs.droidspaces_ref }}" \
+            https://github.com/ravindu644/Droidspaces-OSS.git "$ds_dir"
+          case "${{ inputs.droidspaces_patch }}" in
+            default) variant="6_7_8" ;;
+            alt-123) variant="1_2_3" ;;
+            alt-345) variant="3_4_5" ;;
+            *) variant="${{ inputs.droidspaces_patch }}" ;;
+          esac
+          patch_file="$ds_dir/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${variant}.patch"
+          test -f "$patch_file" || { echo "patch not found: $patch_file"; exit 1; }
+          patch --dry-run -p1 --no-backup-if-mismatch < "$patch_file"
+          patch -p1 --no-backup-if-mismatch < "$patch_file"
+
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          configs="CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_IPC_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_BINFMT_MISC=y
+          CONFIG_BINFMT_SCRIPT=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_USER_NS=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REJECT=y
+          CONFIG_NETFILTER_XT_TARGET_LOG=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_TMPFS_XATTR=y"
+          apply_config() {
+            local line="$1"
+            line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$line" ] && return 0
+            local key="${line%%=*}" value="${line#*=}"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+          while IFS= read -r line; do apply_config "$line"; done <<< "$configs"
+
+          # The kernel that actually runs is the GKI base image (boot.img), so these
+          # options must live in gki_defconfig. Editing gki_defconfig breaks its
+          # canonical-form check, so disable that check.
+          sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
+          grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki || { echo "failed to disable check_defconfig"; exit 1; }
+
+          # CONFIG_USER_NS makes make_kuid()/from_kuid() external, so modules reference
+          # them. They are not part of the GKI KMI, so the base trims them and modpost
+          # fails. Add them to the KMI via a new symbol list file, registered in the
+          # explicit filegroup the GKI base actually uses.
+          {
+            printf '%s\n' '[abi_symbol_list]'
+            printf '%s\n' '  make_kuid'
+            printf '%s\n' '  from_kuid'
+            printf '%s\n' '  from_kuid_munged'
+            printf '%s\n' '  make_kgid'
+            printf '%s\n' '  from_kgid'
+            printf '%s\n' '  from_kgid_munged'
+            printf '%s\n' '  make_kprojid'
+            printf '%s\n' '  from_kprojid'
+            printf '%s\n' '  from_kprojid_munged'
+            printf '%s\n' '  current_in_userns'
+            printf '%s\n' '  __put_user_ns'
+          } > android/abi_gki_aarch64_droidspaces
+          sed -i '/name = "aarch64_additional_kmi_symbol_lists",/,/^)/ s|# keep sorted|# keep sorted\n        "android/abi_gki_aarch64_droidspaces",|' BUILD.bazel
+          grep -q 'android/abi_gki_aarch64_droidspaces' BUILD.bazel || { echo "failed to register KMI list"; exit 1; }
+          git diff --stat
+
       - name: Commit KernelSU-Next into ack submodule
         working-directory: kernel_pixel_6.1/aosp
         run: |
@@ -101,16 +195,24 @@ jobs:
 
           rm -rf KernelSU-Next/.git
           git add -A
+          msg="Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            msg="${msg} + Droidspaces kABI patch"
+          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
-            commit -m "Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
+            commit -m "$msg"
 
       - name: Commit ack pointer in parent repo
         working-directory: kernel_pixel_6.1
         run: |
           set -euo pipefail
-          git add common/ack
+          git add -A
+          msg="Update ack: KernelSU-Next ${KSU_TAG}"
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            msg="${msg} + Droidspaces ${{ inputs.droidspaces_patch }} (${{ inputs.droidspaces_ref }})"
+          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
-            commit -m "Update ack: KernelSU-Next ${KSU_TAG}"
+            commit -m "$msg"
           echo "--- git status (should be clean) ---"
           git status --short --ignore-submodules=none
           test -z "$(git status --porcelain --ignore-submodules=none)"
@@ -192,7 +294,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}-${{ github.run_number }}
+          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}${{ inputs.droidspaces && '-ds' || '' }}-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 30
           path: artifacts/

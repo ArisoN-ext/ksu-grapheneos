@@ -16,6 +16,18 @@ on:
         type: string
         required: false
         default: ""
+      droidspaces:
+        description: Enable Droidspaces support (experimental)
+        type: boolean
+        default: true
+      droidspaces_patch:
+        description: Droidspaces kABI patch variant
+        type: choice
+        options:
+          - default
+          - alt-123
+          - alt-345
+        default: default
 
 permissions:
   contents: read
@@ -31,3 +43,5 @@ jobs:
       device: akita
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
+      droidspaces: ${{ inputs.droidspaces || false }}
+      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
