@@ -128,6 +128,7 @@ jobs:
           CONFIG_BINFMT_MISC=y
           CONFIG_BINFMT_SCRIPT=y
           CONFIG_BINFMT_ELF=y
+          CONFIG_USER_NS=y
           CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
           CONFIG_IP6_NF_NAT=y
           CONFIG_IP6_NF_TARGET_MASQUERADE=y
@@ -160,6 +161,27 @@ jobs:
           # canonical-form check, so disable that check.
           sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
           grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki || { echo "failed to disable check_defconfig"; exit 1; }
+
+          # CONFIG_USER_NS makes make_kuid()/from_kuid() external, so modules reference
+          # them. They are not part of the GKI KMI, so the base trims them and modpost
+          # fails. Add them to the KMI via a new symbol list file, registered in the
+          # explicit filegroup the GKI base actually uses.
+          {
+            printf '%s\n' '[abi_symbol_list]'
+            printf '%s\n' '  make_kuid'
+            printf '%s\n' '  from_kuid'
+            printf '%s\n' '  from_kuid_munged'
+            printf '%s\n' '  make_kgid'
+            printf '%s\n' '  from_kgid'
+            printf '%s\n' '  from_kgid_munged'
+            printf '%s\n' '  make_kprojid'
+            printf '%s\n' '  from_kprojid'
+            printf '%s\n' '  from_kprojid_munged'
+            printf '%s\n' '  current_in_userns'
+            printf '%s\n' '  __put_user_ns'
+          } > android/abi_gki_aarch64_droidspaces
+          sed -i '/name = "aarch64_additional_kmi_symbol_lists",/,/^)/ s|# keep sorted|# keep sorted\n        "android/abi_gki_aarch64_droidspaces",|' BUILD.bazel
+          grep -q 'android/abi_gki_aarch64_droidspaces' BUILD.bazel || { echo "failed to register KMI list"; exit 1; }
           git diff --stat
 
       - name: Commit KernelSU-Next into ack submodule
