@@ -17,7 +17,7 @@ on:
         default: ""
       droidspaces:
         type: boolean
-        default: false
+        default: true
       droidspaces_patch:
         type: string
         default: "default"

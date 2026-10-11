@@ -19,7 +19,7 @@ on:
       droidspaces:
         description: Enable Droidspaces support (experimental)
         type: boolean
-        default: false
+        default: true
       droidspaces_patch:
         description: Droidspaces kABI patch variant
         type: choice
@@ -83,7 +83,7 @@ jobs:
       device: ${{ matrix.device }}
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
-      droidspaces: ${{ inputs.droidspaces || false }}
+      droidspaces: ${{ github.event_name == 'schedule' || inputs.droidspaces }}
       droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
 
   release:
