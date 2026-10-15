@@ -28,6 +28,10 @@ on:
           - alt-123
           - alt-345
         default: default
+      anykernel:
+        description: Bundle an AnyKernel3 flashable zip
+        type: boolean
+        default: true
       release:
         description: Create a GitHub Release (artifacts are always uploaded)
         type: boolean
@@ -85,6 +89,7 @@ jobs:
       ksu_ref: ${{ inputs.ksu_ref || '' }}
       droidspaces: ${{ github.event_name == 'schedule' || inputs.droidspaces }}
       droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
+      anykernel: ${{ github.event_name == 'schedule' || inputs.anykernel }}
 
   release:
     if: ${{ github.event_name == 'schedule' || inputs.release }}

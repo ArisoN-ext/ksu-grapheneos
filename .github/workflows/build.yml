@@ -24,6 +24,9 @@ on:
       droidspaces_ref:
         type: string
         default: "v6.6.0"
+      anykernel:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -290,6 +293,129 @@ jobs:
           } > "$GITHUB_WORKSPACE/artifacts/install.sh"
           chmod +x "$GITHUB_WORKSPACE/artifacts/install.sh"
           cat "$GITHUB_WORKSPACE/artifacts/install.sh"
+
+      - name: Build AnyKernel3 package
+        if: ${{ inputs.anykernel }}
+        env:
+          DEVICE: ${{ inputs.device }}
+          AK3_REF: "020dfeccf9d7e962a48400fc94d3e451df92eead"
+        run: |
+          set -euo pipefail
+          ak3="$RUNNER_TEMP/AnyKernel3"
+          stage="$RUNNER_TEMP/ak3"
+          rm -rf "$ak3" "$stage"
+
+          git clone -q https://github.com/osm0sis/AnyKernel3.git "$ak3"
+          git -C "$ak3" checkout -q --detach "$AK3_REF"
+          test "$(git -C "$ak3" rev-parse HEAD)" = "$AK3_REF"
+
+          mkdir -p "$stage"
+          cp -a "$ak3/tools" "$ak3/META-INF" "$stage/"
+          for f in $ARTIFACTS; do
+            cp "$GITHUB_WORKSPACE/artifacts/$f" "$stage/$f"
+          done
+
+          cat > "$stage/anykernel.sh" <<'AK3EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          properties() { '
+          kernel.string=KernelSU-Next for GrapheneOS (@@DEVICE@@)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=@@DEVICE@@
+          supported.versions=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          RAMDISK_COMPRESSION=auto;
+
+          . tools/ak3-core.sh;
+
+          real_slot() {
+            local s
+            s="$(grep -o 'androidboot[.]slot_suffix=[^ ]*' /proc/cmdline 2>/dev/null | cut -d= -f2)"
+            [ "$s" ] || s="$(grep -o 'androidboot[.]slot=[^ ]*' /proc/cmdline 2>/dev/null | cut -d= -f2)"
+            case "$s" in
+              _a|_b) echo "$s" ;;
+              *) echo "" ;;
+            esac
+          }
+
+          # system_dlkm/vendor_dlkm are logical partitions inside super and
+          # cannot be written in place while the device is booted (KernelSU-Next
+          # Manager / Kernel Flasher run in the running system and do not unmap
+          # them). Replace them the way Kernel Flasher does: create a shadow
+          # logical partition and swap it in; fall back to resizing when super
+          # has no free space. This also handles the inactive slot when a
+          # GrapheneOS OTA is staged but not yet rebooted.
+          flash_logical() {
+            local p img size lptools httools target dev verity rs
+            p="$1"; img="$AKHOME/$2"
+            [ -f "$img" ] || return 0
+            lptools="$AKHOME/tools/lptools_static"
+            httools="$AKHOME/tools/httools_static"
+            size="$(wc -c < "$img")"
+            target="${p}${SLOT}"
+            dev="/dev/block/mapper/${p}${SLOT}"
+            verity="/dev/block/mapper/${p}-verity"
+            rs="$(real_slot)"
+
+            "$lptools" remove "${p}_ak3" >/dev/null 2>&1
+            if "$lptools" create "${p}_ak3" "$size" >/dev/null 2>&1; then
+              "$lptools" unmap "${p}_ak3" >/dev/null 2>&1
+              "$lptools" map "${p}_ak3" >/dev/null 2>&1 || abort "map ${p}_ak3 failed. Aborting..."
+              dd if="$img" of="/dev/block/mapper/${p}_ak3" 2>/dev/null || abort "write ${p}_ak3 failed. Aborting..."
+              "$lptools" replace "${p}_ak3" "$target" >/dev/null 2>&1 || abort "replace ${target} failed. Aborting..."
+              ui_print " " "Flashed ${p} (shadow replace)"
+              return 0
+            fi
+
+            ui_print " " "create ${p}_ak3 failed; resizing ${target}..."
+            # Only the running slot's partition is mounted and in use.
+            if [ "$SLOT" = "$rs" ]; then
+              "$httools" umount "$p" >/dev/null 2>&1
+              [ -e "$verity" ] && "$lptools" unmap "${p}-verity" >/dev/null 2>&1
+            fi
+            [ -e "$dev" ] && "$lptools" unmap "$target" >/dev/null 2>&1
+            "$lptools" resize "$target" "$size" >/dev/null 2>&1 || abort "resize ${target} failed. Aborting..."
+            "$lptools" map "$target" >/dev/null 2>&1 || abort "map ${target} failed. Aborting..."
+            dd if="$img" of="$dev" 2>/dev/null || abort "write ${p} failed. Aborting..."
+            if [ "$SLOT" = "$rs" ]; then
+              "$httools" mount "$p" >/dev/null 2>&1 || abort "mount ${p} failed. Aborting..."
+            else
+              "$lptools" unmap "$target" >/dev/null 2>&1
+            fi
+            ui_print " " "Flashed ${p} (resize)"
+          }
+          AK3EOF
+          sed -i "s/@@DEVICE@@/${DEVICE}/g" "$stage/anykernel.sh"
+          for f in $ARTIFACTS; do
+            case "$f" in
+              system_dlkm.img|vendor_dlkm.img)
+                printf 'flash_logical %s %s\n' "${f%.img}" "$f" ;;
+              *)
+                printf 'flash_generic %s\n' "${f%.img}" ;;
+            esac
+          done >> "$stage/anykernel.sh"
+
+          sh -n "$stage/anykernel.sh"
+          test -f "$stage/META-INF/com/google/android/update-binary"
+          test -f "$stage/tools/ak3-core.sh"
+          test -f "$stage/tools/lptools_static"
+          test -f "$stage/tools/httools_static"
+          grep -q "^device.name1=${DEVICE}\$" "$stage/anykernel.sh"
+          grep -q "^flash_generic boot\$" "$stage/anykernel.sh"
+          for f in $ARTIFACTS; do test -f "$stage/$f"; done
+
+          zipfile="$GITHUB_WORKSPACE/artifacts/AnyKernel3-${DEVICE}.zip"
+          rm -f "$zipfile"
+          ( cd "$stage" && zip -rq9 "$zipfile" . )
+          unzip -t "$zipfile" >/dev/null
+          echo "--- AnyKernel3-${DEVICE}.zip ---"
+          unzip -l "$zipfile"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
