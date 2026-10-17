@@ -1,0 +1,54 @@
+name: Build stallion (Pixel 10a)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: LTO mode
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+        default: thin
+      ksu_ref:
+        description: KernelSU-Next tag/commit (empty = latest tag)
+        type: string
+        required: false
+        default: ""
+      droidspaces:
+        description: Enable Droidspaces support (experimental)
+        type: boolean
+        default: true
+      droidspaces_patch:
+        description: Droidspaces kABI patch variant
+        type: choice
+        options:
+          - default
+          - alt-123
+          - alt-345
+        default: default
+      anykernel:
+        description: Bundle an AnyKernel3 flashable zip
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-stallion
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      device: stallion
+      kernel_repo: kernel_pixel_6.1
+      kernel_branch: "17-stallion"
+      lto: ${{ inputs.lto || 'thin' }}
+      ksu_ref: ${{ inputs.ksu_ref || '' }}
+      droidspaces: ${{ inputs.droidspaces || false }}
+      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
+      anykernel: ${{ inputs.anykernel || false }}

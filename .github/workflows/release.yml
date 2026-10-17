@@ -53,7 +53,7 @@ jobs:
           ENABLED_DEVICES: ${{ vars.ENABLED_DEVICES }}
         run: |
           set -euo pipefail
-          known=(pantah lynx shusky akita raviole bluejay caimito comet tegu)
+          known=(pantah lynx shusky akita raviole bluejay caimito comet tegu rango muzel stallion)
           enabled="${ENABLED_DEVICES// /}"
           selected=()
           if [ -z "$enabled" ]; then
@@ -72,7 +72,25 @@ jobs:
             echo "No devices selected; aborting." >&2
             exit 1
           fi
-          json="$(printf '%s\n' "${selected[@]}" | jq -R . | jq -sc .)"
+          entries=()
+          for dev in "${selected[@]}"; do
+            case "$dev" in
+              rango|muzel) repo="kernel_pixel_6.6"; branch="17" ;;
+              stallion) repo="kernel_pixel_6.1"; branch="17-stallion" ;;
+              *) repo="kernel_pixel_6.1"; branch="17" ;;
+            esac
+            case "$dev" in
+              raviole) names="raviole oriole raven" ;;
+              pantah) names="pantah cheetah panther" ;;
+              shusky) names="shusky husky shiba" ;;
+              caimito) names="caimito tokay caiman komodo" ;;
+              muzel) names="muzel mustang blazer frankel" ;;
+              *) names="$dev" ;;
+            esac
+            entries+=("$(jq -nc --arg d "$dev" --arg r "$repo" --arg b "$branch" --arg n "$names" \
+              '{device:$d, kernel_repo:$r, kernel_branch:$b, device_names:$n}')")
+          done
+          json="$(printf '%s\n' "${entries[@]}" | jq -sc .)"
           echo "devices=$json" >> "$GITHUB_OUTPUT"
           echo "Selected devices: $json"
 
@@ -84,7 +102,10 @@ jobs:
         device: ${{ fromJSON(needs.setup.outputs.devices) }}
     uses: ./.github/workflows/build.yml
     with:
-      device: ${{ matrix.device }}
+      device: ${{ matrix.device.device }}
+      kernel_repo: ${{ matrix.device.kernel_repo }}
+      kernel_branch: ${{ matrix.device.kernel_branch }}
+      device_names: ${{ matrix.device.device_names }}
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
       droidspaces: ${{ github.event_name == 'schedule' || inputs.droidspaces }}

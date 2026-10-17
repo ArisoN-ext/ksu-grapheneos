@@ -45,6 +45,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       device: caimito
+      device_names: caimito tokay caiman komodo
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
       droidspaces: ${{ inputs.droidspaces || false }}
