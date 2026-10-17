@@ -196,7 +196,8 @@ jobs:
           echo "KSU_TAG=$KSU_TAG" >> "$GITHUB_ENV"
           echo "KSU_SHA=$KSU_SHA" >> "$GITHUB_ENV"
 
-          rm -rf KernelSU-Next/.git
+          exclude="$(git rev-parse --git-path info/exclude)"
+          grep -qxF 'KernelSU-Next/' "$exclude" 2>/dev/null || printf '%s\n' 'KernelSU-Next/' >> "$exclude"
           git add -A
           msg="Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
           if [ "${{ inputs.droidspaces }}" = "true" ]; then
