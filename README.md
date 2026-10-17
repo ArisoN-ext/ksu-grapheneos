@@ -22,6 +22,9 @@
 | Pixel 9 / 9 Pro / 9 Pro XL | `caimito` |
 | Pixel 9 Pro Fold | `comet` |
 | Pixel 9a        | `tegu`   |
+| Pixel 10 / 10 Pro / 10 Pro XL | `muzel` |
+| Pixel 10 Pro Fold | `rango` |
+| Pixel 10a       | `stallion` |
 
 ## Builds
 

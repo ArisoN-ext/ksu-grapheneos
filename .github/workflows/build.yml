@@ -6,6 +6,15 @@ on:
       device:
         required: true
         type: string
+      kernel_repo:
+        type: string
+        default: kernel_pixel_6.1
+      kernel_branch:
+        type: string
+        default: "17"
+      device_names:
+        type: string
+        default: ""
       lto:
         type: string
         default: thin
@@ -88,10 +97,11 @@ jobs:
         run: |
           set -euo pipefail
           git clone --recurse-submodules --shallow-submodules --depth=1 \
-            -b 17 https://gitlab.com/grapheneos/kernel_pixel_6.1.git
+            -b ${{ inputs.kernel_branch }} \
+            https://gitlab.com/grapheneos/${{ inputs.kernel_repo }}.git kernel
 
       - name: Setup KernelSU-Next
-        working-directory: kernel_pixel_6.1/aosp
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
           setup_url="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
@@ -104,7 +114,7 @@ jobs:
 
       - name: Enable Droidspaces support
         if: ${{ inputs.droidspaces }}
-        working-directory: kernel_pixel_6.1/aosp
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
           ds_dir="$RUNNER_TEMP/Droidspaces-OSS"
@@ -188,7 +198,7 @@ jobs:
           git diff --stat
 
       - name: Commit KernelSU-Next into ack submodule
-        working-directory: kernel_pixel_6.1/aosp
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
           KSU_TAG="$(git -C KernelSU-Next describe --abbrev=0 --tags 2>/dev/null || git -C KernelSU-Next rev-parse --short HEAD)"
@@ -207,7 +217,7 @@ jobs:
             commit -m "$msg"
 
       - name: Commit ack pointer in parent repo
-        working-directory: kernel_pixel_6.1
+        working-directory: kernel
         run: |
           set -euo pipefail
           git add -A
@@ -222,17 +232,23 @@ jobs:
           test -z "$(git status --porcelain --ignore-submodules=none)"
 
       - name: Build kernel
-        working-directory: kernel_pixel_6.1
+        working-directory: kernel
         env:
-          KLEAF_REPO_MANIFEST: aosp_manifest.xml
           KLEAF_MAKE_JOBS: 4
         run: |
           set -euo pipefail
+          if [ "${{ inputs.kernel_repo }}" = "kernel_pixel_6.6" ]; then
+            manifest_args=(--repo_manifest="$(realpath .)":"$(realpath aosp_manifest.xml)")
+          else
+            export KLEAF_REPO_MANIFEST=aosp_manifest.xml
+            manifest_args=()
+          fi
           ( while true; do date; free -h; df -h /; sleep 60; done ) &
           MON=$!
           trap 'kill "$MON" 2>/dev/null || true' EXIT
           nice -n 19 ionice -c2 -n7 \
             ./build_${{ inputs.device }}.sh --lto=${{ inputs.lto }} \
+              "${manifest_args[@]}" \
               --config=local \
               --jobs=4 \
               --local_ram_resources=12000 \
@@ -256,7 +272,7 @@ jobs:
           echo "Artifacts: $artifacts"
 
       - name: Verify and stage artifacts
-        working-directory: kernel_pixel_6.1
+        working-directory: kernel
         run: |
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/artifacts"
@@ -316,19 +332,31 @@ jobs:
             cp "$GITHUB_WORKSPACE/artifacts/$f" "$stage/$f"
           done
 
-          cat > "$stage/anykernel.sh" <<'AK3EOF'
-          ### AnyKernel3 Ramdisk Mod Script
-          properties() { '
-          kernel.string=KernelSU-Next for GrapheneOS (@@DEVICE@@)
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=0
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=@@DEVICE@@
-          supported.versions=
-          '; }
+          # AnyKernel3 device check runs against ro.product.device, which is the
+          # Pixel model codename (e.g. husky, mustang), not the kernel codename.
+          names="${{ inputs.device_names }}"
+          [ -n "$names" ] || names="${{ inputs.device }}"
 
+          {
+            printf '%s\n' '### AnyKernel3 Ramdisk Mod Script'
+            printf '%s\n' "properties() { '"
+            printf 'kernel.string=KernelSU-Next for GrapheneOS (%s)\n' "${{ inputs.device }}"
+            printf '%s\n' 'do.devicecheck=1'
+            printf '%s\n' 'do.modules=0'
+            printf '%s\n' 'do.systemless=0'
+            printf '%s\n' 'do.cleanup=1'
+            printf '%s\n' 'do.cleanuponabort=0'
+            n=0
+            for dn in $names; do
+              n=$((n + 1))
+              printf 'device.name%d=%s\n' "$n" "$dn"
+            done
+            printf '%s\n' 'supported.versions='
+            printf '%s\n' "'; }"
+            printf '\n'
+          } > "$stage/anykernel.sh"
+
+          cat >> "$stage/anykernel.sh" <<'AK3EOF'
           BLOCK=boot;
           IS_SLOT_DEVICE=auto;
           RAMDISK_COMPRESSION=auto;
@@ -392,7 +420,6 @@ jobs:
             ui_print " " "Flashed ${p} (resize)"
           }
           AK3EOF
-          sed -i "s/@@DEVICE@@/${DEVICE}/g" "$stage/anykernel.sh"
           for f in $ARTIFACTS; do
             case "$f" in
               system_dlkm.img|vendor_dlkm.img)
@@ -407,7 +434,7 @@ jobs:
           test -f "$stage/tools/ak3-core.sh"
           test -f "$stage/tools/lptools_static"
           test -f "$stage/tools/httools_static"
-          grep -q "^device.name1=${DEVICE}\$" "$stage/anykernel.sh"
+          grep -q "^device.name1=" "$stage/anykernel.sh"
           grep -q "^flash_generic boot\$" "$stage/anykernel.sh"
           for f in $ARTIFACTS; do test -f "$stage/$f"; done
 
