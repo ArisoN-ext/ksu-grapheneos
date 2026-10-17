@@ -28,6 +28,10 @@ on:
           - alt-123
           - alt-345
         default: default
+      anykernel:
+        description: Bundle an AnyKernel3 flashable zip
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -45,3 +49,4 @@ jobs:
       ksu_ref: ${{ inputs.ksu_ref || '' }}
       droidspaces: ${{ inputs.droidspaces || false }}
       droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
+      anykernel: ${{ inputs.anykernel || false }}

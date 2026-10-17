@@ -33,6 +33,7 @@ Each run publishes an artifact (`ksu-<version>-<target>-<run>`) containing:
 - `system_dlkm.img`
 - `vendor_dlkm.img`
 - `install.sh`
+- `AnyKernel3-<target>.zip`
 
 ## Installation
 
