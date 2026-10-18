@@ -12,7 +12,7 @@ on:
           - none
         default: thin
       ksu_ref:
-        description: KernelSU-Next tag/commit (empty = latest tag)
+        description: SukiSU-Ultra tag/commit (empty = per manual_hooks)
         type: string
         required: false
         default: ""
@@ -30,6 +30,10 @@ on:
         default: default
       anykernel:
         description: Bundle an AnyKernel3 flashable zip
+        type: boolean
+        default: true
+      manual_hooks:
+        description: Use SukiSU manual hooks (off = kprobes)
         type: boolean
         default: true
       release:
@@ -111,6 +115,7 @@ jobs:
       droidspaces: ${{ github.event_name == 'schedule' || inputs.droidspaces }}
       droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
       anykernel: ${{ github.event_name == 'schedule' || inputs.anykernel }}
+      manual_hooks: ${{ github.event_name == 'schedule' || inputs.manual_hooks }}
 
   release:
     if: ${{ github.event_name == 'schedule' || inputs.release }}

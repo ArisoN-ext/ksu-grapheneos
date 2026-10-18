@@ -1,13 +1,23 @@
-# KernelSU-Next kernels for GrapheneOS
+# SukiSU-Ultra kernels for GrapheneOS
 
 ## Warning
 
-- These are **unofficial** builds. They are not affiliated with or endorsed by GrapheneOS or KernelSU-Next.
+- These are **unofficial** builds. They are not affiliated with or endorsed by GrapheneOS or SukiSU-Ultra.
 - Flashing a kernel can **brick your device**, cause data loss, or make it unbootable. You do it **at your own risk**.
 - The authors take **no responsibility** for any damage, data loss, or other consequences.
 - KernelSU weakens the device security model and may break GrapheneOS hardening, verified boot, and Play Integrity / attestation.
 - Unlocking the bootloader **wipes all data** and voids the warranty.
 - Back up your data and make sure you can restore the stock images before flashing.
+
+## Integration
+
+SukiSU-Ultra is integrated with **manual hooks** (no kprobes): the build pins the
+`builtin-new` branch and patches `do_execveat_common()`, `sys_faccessat()`,
+`sys_newfstatat()`, the `sys_newfstat` return path and `sys_reboot()` in the
+GrapheneOS kernel source. The build passes `--disable_randstruct` (the same
+Kleaf flag used by GrapheneOS' own `build_lynx.sh`) because SukiSU's LSM hook
+hijacking relies on stable `security_hook_list` offsets. The matching manager
+app is `com.sukisu.ultra`.
 
 ## Supported devices
 
@@ -73,6 +83,6 @@ Requirements: unlocked bootloader, `adb` and `fastboot` installed.
    fastboot reboot
    ```
 
-5. Install the KernelSU-Next manager app and verify root.
+5. Install the SukiSU-Ultra manager app (`com.sukisu.ultra`) and verify root.
 
 To restore the stock kernel, flash the matching GrapheneOS factory image or the original kernel images.

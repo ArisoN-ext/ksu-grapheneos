@@ -1,4 +1,4 @@
-name: Build KernelSU-Next kernel
+name: Build SukiSU-Ultra kernel
 
 on:
   workflow_call:
@@ -36,6 +36,9 @@ on:
       anykernel:
         type: boolean
         default: true
+      manual_hooks:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -44,6 +47,11 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+    env:
+      # Manual hooks (default): pinned SukiSU-Ultra commit on the builtin-new branch.
+      KSU_REF: 7f2d7e3f04234d90b5aa7ecec5f028ca54862e20
+      # Kprobe fallback (manual_hooks=false): SukiSU-Ultra kprobe branch.
+      KSU_KPROBE_REF: main
 
     steps:
       - name: Checkout
@@ -100,17 +108,195 @@ jobs:
             -b ${{ inputs.kernel_branch }} \
             https://gitlab.com/grapheneos/${{ inputs.kernel_repo }}.git kernel
 
-      - name: Setup KernelSU-Next
+      - name: Setup SukiSU-Ultra
         working-directory: kernel/aosp
         run: |
           set -euo pipefail
-          setup_url="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
-          if [ -n "${{ inputs.ksu_ref }}" ]; then
-            curl -LSs "$setup_url" | bash -s "${{ inputs.ksu_ref }}"
-          else
-            curl -LSs "$setup_url" | bash -
+          setup_url="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          ref="${{ inputs.ksu_ref }}"
+          if [ -z "$ref" ]; then
+            if [ "${{ inputs.manual_hooks }}" = "true" ]; then
+              ref="$KSU_REF"
+            else
+              ref="$KSU_KPROBE_REF"
+            fi
           fi
+          echo "SukiSU-Ultra ref: $ref (manual_hooks=${{ inputs.manual_hooks }})"
+          curl -LSs "$setup_url" | bash -s "$ref"
+          test -d KernelSU/.git || { echo "KernelSU checkout not found"; exit 1; }
+          test -e drivers/kernelsu || { echo "drivers/kernelsu symlink missing"; exit 1; }
           sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_PROTECT=y/' arch/arm64/configs/gki_defconfig
+
+      - name: Apply SukiSU manual hooks
+        if: ${{ inputs.manual_hooks }}
+        working-directory: kernel/aosp
+        run: |
+          set -euo pipefail
+          test -d KernelSU || { echo "KernelSU source missing"; exit 1; }
+          # Guard against a kprobe branch (e.g. main) being selected: manual hooks
+          # need the builtin branch entry points.
+          grep -q "ksu_handle_execveat" KernelSU/kernel/feature/sucompat.c \
+            || { echo "KernelSU checkout is not a manual-hook (builtin) branch"; exit 1; }
+          grep -q "ksu_handle_newfstat_ret" KernelSU/kernel/runtime/ksud.c \
+            || { echo "KernelSU checkout lacks ksu_handle_newfstat_ret"; exit 1; }
+
+          # The pinned builtin-new branch has no kprobes; the kernel source must
+          # call SukiSU entry points directly. Fail hard if an anchor is not found
+          # exactly once so a kernel-source drift cannot silently ship no hooks.
+          python3 - <<'PYEOF'
+          import sys, pathlib
+
+          def patch(path, anchor, insert, count=1, marker=None):
+              p = pathlib.Path(path)
+              s = p.read_text(encoding="utf-8")
+              if marker and marker in s:
+                  print(f"already patched: {path}")
+                  return
+              n = s.count(anchor)
+              if n != count:
+                  sys.exit(f"ERROR: {path}: anchor found {n} times, expected {count}")
+              s = s.replace(anchor, insert, 1)
+              p.write_text(s, encoding="utf-8")
+              print(f"patched: {path}")
+
+          # fs/exec.c -- do_execveat_common: covers execve/execveat/compat,
+          # not kernel_execve (it does not go through this helper).
+          patch(
+              "fs/exec.c",
+              "static int do_execveat_common(int fd, struct filename *filename,\n"
+              "\t\t\t      struct user_arg_ptr argv,\n"
+              "\t\t\t      struct user_arg_ptr envp,\n"
+              "\t\t\t      int flags)\n{\n",
+              "static int do_execveat_common(int fd, struct filename *filename,\n"
+              "\t\t\t      struct user_arg_ptr argv,\n"
+              "\t\t\t      struct user_arg_ptr envp,\n"
+              "\t\t\t      int flags)\n{\n"
+              "#ifdef CONFIG_KSU\n"
+              "\textern int ksu_handle_execveat(int *, struct filename **, void *, void *, int *);\n"
+              "\tif (unlikely(!IS_ERR(filename)))\n"
+              "\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
+              "#endif\n",
+              marker="ksu_handle_execveat",
+          )
+
+          # fs/open.c -- sys_faccessat (scope-minimized; faccessat2 not hooked).
+          patch(
+              "fs/open.c",
+              "SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n"
+              "\treturn do_faccessat(dfd, filename, mode, 0);\n}\n",
+              "SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n"
+              "#ifdef CONFIG_KSU\n"
+              "\textern int ksu_handle_faccessat(int *, const char __user **, int *, int *);\n"
+              "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n"
+              "#endif\n"
+              "\treturn do_faccessat(dfd, filename, mode, 0);\n}\n",
+              marker="ksu_handle_faccessat",
+          )
+
+          # fs/stat.c -- sys_newfstatat (sucompat for stat()/lstat()).
+          patch(
+              "fs/stat.c",
+              "SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,\n"
+              "\t\tstruct stat __user *, statbuf, int, flag)\n{\n"
+              "\tstruct kstat stat;\n"
+              "\tint error;\n",
+              "SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,\n"
+              "\t\tstruct stat __user *, statbuf, int, flag)\n{\n"
+              "#ifdef CONFIG_KSU\n"
+              "\textern int ksu_handle_stat(int *, const char __user **, int *);\n"
+              "\tksu_handle_stat(&dfd, &filename, &flag);\n"
+              "#endif\n"
+              "\tstruct kstat stat;\n"
+              "\tint error;\n",
+              marker="ksu_handle_stat",
+          )
+
+          # fs/stat.c -- sys_newfstat return hook (Android 16+ rc-size spoofing).
+          patch(
+              "fs/stat.c",
+              "SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)\n{\n"
+              "\tstruct kstat stat;\n"
+              "\tint error = vfs_fstat(fd, &stat);\n\n"
+              "\tif (!error)\n"
+              "\t\terror = cp_new_stat(&stat, statbuf);\n\n"
+              "\treturn error;\n}\n",
+              "SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)\n{\n"
+              "\tstruct kstat stat;\n"
+              "\tint error = vfs_fstat(fd, &stat);\n\n"
+              "\tif (!error)\n"
+              "\t\terror = cp_new_stat(&stat, statbuf);\n\n"
+              "#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\n"
+              "#pragma GCC diagnostic push\n"
+              "#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"\n"
+              "\textern void ksu_handle_newfstat_ret(unsigned int *, struct stat __user **);\n"
+              "\tksu_handle_newfstat_ret(&fd, &statbuf);\n"
+              "#pragma GCC diagnostic pop\n"
+              "#endif\n\n"
+              "\treturn error;\n}\n",
+              marker="ksu_handle_newfstat_ret",
+          )
+
+          # kernel/reboot.c -- sys_reboot supercall entry.
+          patch(
+              "kernel/reboot.c",
+              "SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n"
+              "\t\tvoid __user *, arg)\n{\n"
+              "\tstruct pid_namespace *pid_ns = task_active_pid_ns(current);\n",
+              "SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,\n"
+              "\t\tvoid __user *, arg)\n{\n"
+              "#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\n"
+              "\textern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\n"
+              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n"
+              "#endif\n"
+              "\tstruct pid_namespace *pid_ns = task_active_pid_ns(current);\n",
+              marker="ksu_handle_sys_reboot",
+          )
+
+          print("manual hooks applied")
+          PYEOF
+
+          # CONFIG_KSU is enabled by Kconfig default; manual hooks are used because
+          # none of the runtime hook strategies are selected.
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          configs="CONFIG_KSU=y
+          # CONFIG_KSU_KPROBES_KSUD is not set
+          # CONFIG_KSU_HACK_ARM64_BRANCH_LINK is not set
+          # CONFIG_KSU_TAMPER_SYSCALL_TABLE is not set"
+          apply_config() {
+            local line="$1"
+            line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$line" ] && return 0
+            if [[ "$line" == "#"*" is not set" ]]; then
+              local key="${line#\# }"; key="${key% is not set}"
+              if grep -q "^$key=" "$DEFCONFIG"; then
+                sed -i "s|^$key=.*|# $key is not set|g" "$DEFCONFIG"
+              elif ! grep -q "^# $key is not set" "$DEFCONFIG"; then
+                echo "# $key is not set" >> "$DEFCONFIG"
+              fi
+              return 0
+            fi
+            local key="${line%%=*}" value="${line#*=}"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+          while IFS= read -r line; do apply_config "$line"; done <<< "$configs"
+
+          # Adding KSU options to gki_defconfig breaks its canonical-form check;
+          # the actual running image is the GKI base, so disable the check.
+          sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
+          grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki || { echo "failed to disable check_defconfig"; exit 1; }
+
+          grep -q "ksu_handle_execveat" fs/exec.c
+          grep -q "ksu_handle_faccessat" fs/open.c
+          grep -q "ksu_handle_stat" fs/stat.c
+          grep -q "ksu_handle_newfstat_ret" fs/stat.c
+          grep -q "ksu_handle_sys_reboot" kernel/reboot.c
+          git diff --stat
 
       - name: Enable Droidspaces support
         if: ${{ inputs.droidspaces }}
@@ -197,19 +383,19 @@ jobs:
           grep -q 'android/abi_gki_aarch64_droidspaces' BUILD.bazel || { echo "failed to register KMI list"; exit 1; }
           git diff --stat
 
-      - name: Commit KernelSU-Next into ack submodule
+      - name: Commit SukiSU-Ultra into ack submodule
         working-directory: kernel/aosp
         run: |
           set -euo pipefail
-          KSU_TAG="$(git -C KernelSU-Next describe --abbrev=0 --tags 2>/dev/null || git -C KernelSU-Next rev-parse --short HEAD)"
-          KSU_SHA="$(git -C KernelSU-Next rev-parse --short HEAD)"
+          KSU_TAG="$(git -C KernelSU describe --abbrev=0 --tags 2>/dev/null || git -C KernelSU rev-parse --short HEAD)"
+          KSU_SHA="$(git -C KernelSU rev-parse --short HEAD)"
           echo "KSU_TAG=$KSU_TAG" >> "$GITHUB_ENV"
           echo "KSU_SHA=$KSU_SHA" >> "$GITHUB_ENV"
 
           exclude="$(git rev-parse --git-path info/exclude)"
-          grep -qxF 'KernelSU-Next/' "$exclude" 2>/dev/null || printf '%s\n' 'KernelSU-Next/' >> "$exclude"
+          grep -qxF 'KernelSU/' "$exclude" 2>/dev/null || printf '%s\n' 'KernelSU/' >> "$exclude"
           git add -A
-          msg="Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
+          msg="Add SukiSU-Ultra ${KSU_TAG} (${KSU_SHA})"
           if [ "${{ inputs.droidspaces }}" = "true" ]; then
             msg="${msg} + Droidspaces kABI patch"
           fi
@@ -221,7 +407,7 @@ jobs:
         run: |
           set -euo pipefail
           git add -A
-          msg="Update ack: KernelSU-Next ${KSU_TAG}"
+          msg="Update ack: SukiSU-Ultra ${KSU_TAG}"
           if [ "${{ inputs.droidspaces }}" = "true" ]; then
             msg="${msg} + Droidspaces ${{ inputs.droidspaces_patch }} (${{ inputs.droidspaces_ref }})"
           fi
@@ -248,6 +434,7 @@ jobs:
           trap 'kill "$MON" 2>/dev/null || true' EXIT
           nice -n 19 ionice -c2 -n7 \
             ./build_${{ inputs.device }}.sh --lto=${{ inputs.lto }} \
+              --disable_randstruct \
               "${manifest_args[@]}" \
               --config=local \
               --jobs=4 \
@@ -340,7 +527,7 @@ jobs:
           {
             printf '%s\n' '### AnyKernel3 Ramdisk Mod Script'
             printf '%s\n' "properties() { '"
-            printf 'kernel.string=KernelSU-Next for GrapheneOS (%s)\n' "${{ inputs.device }}"
+            printf 'kernel.string=SukiSU-Ultra for GrapheneOS (%s)\n' "${{ inputs.device }}"
             printf '%s\n' 'do.devicecheck=1'
             printf '%s\n' 'do.modules=0'
             printf '%s\n' 'do.systemless=0'
@@ -374,7 +561,7 @@ jobs:
           }
 
           # system_dlkm/vendor_dlkm are logical partitions inside super and
-          # cannot be written in place while the device is booted (KernelSU-Next
+          # cannot be written in place while the device is booted (SukiSU-Ultra
           # Manager / Kernel Flasher run in the running system and do not unmap
           # them). Replace them the way Kernel Flasher does: create a shadow
           # logical partition and swap it in; fall back to resizing when super
