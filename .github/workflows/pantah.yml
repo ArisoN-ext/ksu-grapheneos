@@ -45,6 +45,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       device: pantah
+      device_names: pantah cheetah panther
       lto: ${{ inputs.lto || 'thin' }}
       ksu_ref: ${{ inputs.ksu_ref || '' }}
       droidspaces: ${{ inputs.droidspaces || false }}
