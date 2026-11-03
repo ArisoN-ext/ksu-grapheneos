@@ -1,0 +1,42 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bc \
+        bison \
+        build-essential \
+        bzip2 \
+        ca-certificates \
+        cpio \
+        curl \
+        device-tree-compiler \
+        file \
+        flex \
+        git \
+        gzip \
+        jq \
+        libelf-dev \
+        libgmp-dev \
+        libncurses5 \
+        libssl-dev \
+        libtinfo5 \
+        lz4 \
+        make \
+        openssl \
+        python3 \
+        rsync \
+        tar \
+        unzip \
+        util-linux \
+        xz-utils \
+        zip \
+        zlib1g-dev \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --system --add safe.directory '*'
+
+WORKDIR /work
