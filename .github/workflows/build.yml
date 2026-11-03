@@ -20,19 +20,10 @@ on:
         default: thin
       ksu_ref:
         type: string
-        default: ""
+        default: "v3.4.2"
       artifacts:
         type: string
         default: ""
-      droidspaces:
-        type: boolean
-        default: true
-      droidspaces_patch:
-        type: string
-        default: "default"
-      droidspaces_ref:
-        type: string
-        default: "v6.6.0"
       anykernel:
         type: boolean
         default: true
@@ -104,56 +95,25 @@ jobs:
         working-directory: kernel/aosp
         run: |
           set -euo pipefail
-          setup_url="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
-          if [ -n "${{ inputs.ksu_ref }}" ]; then
-            curl -LSs "$setup_url" | bash -s "${{ inputs.ksu_ref }}"
-          else
-            curl -LSs "$setup_url" | bash -
-          fi
-          sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_PROTECT=y/' arch/arm64/configs/gki_defconfig
-
-      - name: Enable Droidspaces support
-        if: ${{ inputs.droidspaces }}
-        working-directory: kernel/aosp
-        run: |
-          set -euo pipefail
-          ds_dir="$RUNNER_TEMP/Droidspaces-OSS"
-          rm -rf "$ds_dir"
-          git clone --depth=1 --branch "${{ inputs.droidspaces_ref }}" \
-            https://github.com/ravindu644/Droidspaces-OSS.git "$ds_dir"
-          case "${{ inputs.droidspaces_patch }}" in
-            default) variant="6_7_8" ;;
-            alt-123) variant="1_2_3" ;;
-            alt-345) variant="3_4_5" ;;
-            *) variant="${{ inputs.droidspaces_patch }}" ;;
-          esac
-          patch_file="$ds_dir/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${variant}.patch"
-          test -f "$patch_file" || { echo "patch not found: $patch_file"; exit 1; }
-          patch --dry-run -p1 --no-backup-if-mismatch < "$patch_file"
-          patch -p1 --no-backup-if-mismatch < "$patch_file"
+          ref="${{ inputs.ksu_ref }}"
+          [ -n "$ref" ] || ref="v3.4.2"
+          echo "KernelSU-Next ref: $ref"
+          # Pin the integration script to the same release tag as the source.
+          setup_url="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/v3.4.2/kernel/setup.sh"
+          curl -LSs "$setup_url" | bash -s "$ref"
+          test -d KernelSU-Next/.git || { echo "KernelSU-Next checkout not found"; exit 1; }
+          expected="$(git -C KernelSU-Next rev-parse "$ref^{commit}")" \
+            || { echo "unknown KernelSU-Next ref: $ref"; exit 1; }
+          actual="$(git -C KernelSU-Next rev-parse HEAD)"
+          [ "$actual" = "$expected" ] \
+            || { echo "KernelSU-Next is at $actual, expected $expected"; exit 1; }
+          test -e drivers/kernelsu || { echo "drivers/kernelsu symlink missing"; exit 1; }
+          grep -q "obj-\$(CONFIG_KSU) += kernelsu/" drivers/Makefile \
+            || { echo "drivers/Makefile was not patched"; exit 1; }
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig \
+            || { echo "drivers/Kconfig was not patched"; exit 1; }
 
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          configs="CONFIG_SYSVIPC=y
-          CONFIG_POSIX_MQUEUE=y
-          CONFIG_IPC_NS=y
-          CONFIG_PID_NS=y
-          CONFIG_DEVTMPFS=y
-          CONFIG_BINFMT_MISC=y
-          CONFIG_BINFMT_SCRIPT=y
-          CONFIG_BINFMT_ELF=y
-          CONFIG_USER_NS=y
-          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-          CONFIG_IP6_NF_NAT=y
-          CONFIG_IP6_NF_TARGET_MASQUERADE=y
-          CONFIG_NETFILTER_XT_TARGET_REJECT=y
-          CONFIG_NETFILTER_XT_TARGET_LOG=y
-          CONFIG_NETFILTER_XT_MATCH_RECENT=y
-          CONFIG_IP_SET=y
-          CONFIG_IP_SET_HASH_IP=y
-          CONFIG_IP_SET_HASH_NET=y
-          CONFIG_NETFILTER_XT_SET=y
-          CONFIG_TMPFS_POSIX_ACL=y
-          CONFIG_TMPFS_XATTR=y"
           apply_config() {
             local line="$1"
             line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
@@ -167,34 +127,64 @@ jobs:
               echo "$key=$value" >> "$DEFCONFIG"
             fi
           }
+          configs='CONFIG_KSU=y
+          CONFIG_MODULE_SIG_ALL=y
+          CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"'
           while IFS= read -r line; do apply_config "$line"; done <<< "$configs"
 
-          # The kernel that actually runs is the GKI base image (boot.img), so these
-          # options must live in gki_defconfig. Editing gki_defconfig breaks its
-          # canonical-form check, so disable that check.
-          sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
-          grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki || { echo "failed to disable check_defconfig"; exit 1; }
+          grep -q '^CONFIG_KSU=y' "$DEFCONFIG" \
+            || { echo "CONFIG_KSU is not enabled"; exit 1; }
+          grep -q '^CONFIG_MODULE_SIG_FORCE=y' "$DEFCONFIG" \
+            || { echo "CONFIG_MODULE_SIG_FORCE must stay enabled"; exit 1; }
+          ! grep -q '^CONFIG_MODULE_SIG_PROTECT=y' "$DEFCONFIG" \
+            || { echo "CONFIG_MODULE_SIG_PROTECT must not replace FORCE"; exit 1; }
+          grep -q '^CONFIG_KPROBES=y' "$DEFCONFIG" \
+            || { echo "CONFIG_KPROBES is required by KernelSU-Next"; exit 1; }
+          grep -q '^CONFIG_EXT4_FS=y' "$DEFCONFIG" \
+            || { echo "CONFIG_EXT4_FS is required by KernelSU-Next"; exit 1; }
 
-          # CONFIG_USER_NS makes make_kuid()/from_kuid() external, so modules reference
-          # them. They are not part of the GKI KMI, so the base trims them and modpost
-          # fails. Add them to the KMI via a new symbol list file, registered in the
-          # explicit filegroup the GKI base actually uses.
-          {
-            printf '%s\n' '[abi_symbol_list]'
-            printf '%s\n' '  make_kuid'
-            printf '%s\n' '  from_kuid'
-            printf '%s\n' '  from_kuid_munged'
-            printf '%s\n' '  make_kgid'
-            printf '%s\n' '  from_kgid'
-            printf '%s\n' '  from_kgid_munged'
-            printf '%s\n' '  make_kprojid'
-            printf '%s\n' '  from_kprojid'
-            printf '%s\n' '  from_kprojid_munged'
-            printf '%s\n' '  current_in_userns'
-            printf '%s\n' '  __put_user_ns'
-          } > android/abi_gki_aarch64_droidspaces
-          sed -i '/name = "aarch64_additional_kmi_symbol_lists",/,/^)/ s|# keep sorted|# keep sorted\n        "android/abi_gki_aarch64_droidspaces",|' BUILD.bazel
-          grep -q 'android/abi_gki_aarch64_droidspaces' BUILD.bazel || { echo "failed to register KMI list"; exit 1; }
+          # Adding CONFIG_KSU to gki_defconfig breaks its canonical-form check;
+          # the actual running image is the GKI base, so disable the check.
+          sed -i 's|^POST_DEFCONFIG_CMDS="check_defconfig"|POST_DEFCONFIG_CMDS=""|' build.config.gki
+          grep -q '^POST_DEFCONFIG_CMDS=""' build.config.gki \
+            || { echo "failed to disable check_defconfig"; exit 1; }
+          git diff --stat
+
+      - name: Apply Kleaf module signing patches
+        run: python3 scripts/kernel-patches.py kernel
+
+      - name: Enable device module signing
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          # Device defconfigs disable MODULE_SIG_ALL; FORCE requires those
+          # modules to be signed.
+          while IFS= read -r -d '' f; do
+            tmp="$(mktemp)"
+            awk '
+              BEGIN { done = 0 }
+              /^CONFIG_MODULE_SIG_ALL=/ {
+                if (!done) { print "CONFIG_MODULE_SIG_ALL=y"; done = 1 }
+                next
+              }
+              /^# CONFIG_MODULE_SIG_ALL is not set$/ {
+                if (!done) { print "CONFIG_MODULE_SIG_ALL=y"; done = 1 }
+                next
+              }
+              { print }
+              END { if (!done) print "CONFIG_MODULE_SIG_ALL=y" }
+            ' "$f" > "$tmp"
+            mv "$tmp" "$f"
+          done < <(find private/devices/google -type f -name '*_defconfig' -print0)
+
+          for d in private/devices/google/*/; do
+            [ -e "$d/.git" ] || continue
+            [ -n "$(git -C "$d" status --porcelain)" ] || continue
+            git -C "$d" add -A
+            git -C "$d" -c commit.gpgsign=false \
+              -c user.name=github-actions -c user.email=github-actions@github.com \
+              commit -m "Enable CONFIG_MODULE_SIG_ALL for module signing"
+          done
           git diff --stat
 
       - name: Commit KernelSU-Next into ack submodule
@@ -210,9 +200,6 @@ jobs:
           grep -qxF 'KernelSU-Next/' "$exclude" 2>/dev/null || printf '%s\n' 'KernelSU-Next/' >> "$exclude"
           git add -A
           msg="Add KernelSU-Next ${KSU_TAG} (${KSU_SHA})"
-          if [ "${{ inputs.droidspaces }}" = "true" ]; then
-            msg="${msg} + Droidspaces kABI patch"
-          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
             commit -m "$msg"
 
@@ -222,9 +209,6 @@ jobs:
           set -euo pipefail
           git add -A
           msg="Update ack: KernelSU-Next ${KSU_TAG}"
-          if [ "${{ inputs.droidspaces }}" = "true" ]; then
-            msg="${msg} + Droidspaces ${{ inputs.droidspaces_patch }} (${{ inputs.droidspaces_ref }})"
-          fi
           git -c commit.gpgsign=false -c user.name=github-actions -c user.email=github-actions@github.com \
             commit -m "$msg"
           echo "--- git status (should be clean) ---"
@@ -253,6 +237,27 @@ jobs:
               --jobs=4 \
               --local_ram_resources=12000 \
               --local_cpu_resources=4
+
+      - name: Verify module signing
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          config="out/${{ inputs.device }}/dist/.config"
+          test -f "$config" || { echo "missing $config"; exit 1; }
+          grep -q '^CONFIG_MODULE_SIG_FORCE=y' "$config" \
+            || { echo "CONFIG_MODULE_SIG_FORCE is not enabled"; exit 1; }
+          grep -q '^CONFIG_MODULE_SIG_ALL=y' "$config" \
+            || { echo "CONFIG_MODULE_SIG_ALL is not enabled"; exit 1; }
+
+          unsigned=0
+          for f in out/${{ inputs.device }}/dist/*.ko; do
+            [ -e "$f" ] || continue
+            if ! tail -c 28 "$f" | grep -aq '~Module signature appended~'; then
+              echo "unsigned module: $f"
+              unsigned=1
+            fi
+          done
+          [ "$unsigned" -eq 0 ] || { echo "unsigned modules found"; exit 1; }
 
       - name: Resolve artifact list
         env:
@@ -448,7 +453,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}${{ inputs.droidspaces && '-ds' || '' }}-${{ github.run_number }}
+          name: ksu-${{ env.KSU_TAG }}-${{ inputs.device }}-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 30
           path: artifacts/

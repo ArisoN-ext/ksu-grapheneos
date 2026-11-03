@@ -12,22 +12,10 @@ on:
           - none
         default: thin
       ksu_ref:
-        description: KernelSU-Next tag/commit (empty = latest tag)
+        description: KernelSU-Next tag/commit (empty = v3.4.2)
         type: string
         required: false
-        default: ""
-      droidspaces:
-        description: Enable Droidspaces support (experimental)
-        type: boolean
-        default: true
-      droidspaces_patch:
-        description: Droidspaces kABI patch variant
-        type: choice
-        options:
-          - default
-          - alt-123
-          - alt-345
-        default: default
+        default: "v3.4.2"
       anykernel:
         description: Bundle an AnyKernel3 flashable zip
         type: boolean
@@ -48,7 +36,5 @@ jobs:
       device_names: muzel mustang blazer frankel
       kernel_repo: kernel_pixel_6.6
       lto: ${{ inputs.lto || 'thin' }}
-      ksu_ref: ${{ inputs.ksu_ref || '' }}
-      droidspaces: ${{ inputs.droidspaces || false }}
-      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
+      ksu_ref: ${{ inputs.ksu_ref || 'v3.4.2' }}
       anykernel: ${{ inputs.anykernel || false }}

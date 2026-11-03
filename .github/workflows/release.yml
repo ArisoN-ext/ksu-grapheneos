@@ -12,22 +12,10 @@ on:
           - none
         default: thin
       ksu_ref:
-        description: KernelSU-Next tag/commit (empty = latest tag)
+        description: KernelSU-Next tag/commit (empty = v3.4.2)
         type: string
         required: false
-        default: ""
-      droidspaces:
-        description: Enable Droidspaces support (experimental)
-        type: boolean
-        default: true
-      droidspaces_patch:
-        description: Droidspaces kABI patch variant
-        type: choice
-        options:
-          - default
-          - alt-123
-          - alt-345
-        default: default
+        default: "v3.4.2"
       anykernel:
         description: Bundle an AnyKernel3 flashable zip
         type: boolean
@@ -107,9 +95,7 @@ jobs:
       kernel_branch: ${{ matrix.device.kernel_branch }}
       device_names: ${{ matrix.device.device_names }}
       lto: ${{ inputs.lto || 'thin' }}
-      ksu_ref: ${{ inputs.ksu_ref || '' }}
-      droidspaces: ${{ github.event_name == 'schedule' || inputs.droidspaces }}
-      droidspaces_patch: ${{ inputs.droidspaces_patch || 'default' }}
+      ksu_ref: ${{ inputs.ksu_ref || 'v3.4.2' }}
       anykernel: ${{ github.event_name == 'schedule' || inputs.anykernel }}
 
   release:
@@ -118,8 +104,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      DS_SUFFIX: ${{ inputs.droidspaces && '-ds' || '' }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -138,7 +122,7 @@ jobs:
               version="$(cat "$d/version.txt")"
             fi
             chmod +x "$d/install.sh"
-            ( cd "$d" && zip -r "$GITHUB_WORKSPACE/release/${device}${DS_SUFFIX}.zip" . \
+            ( cd "$d" && zip -r "$GITHUB_WORKSPACE/release/${device}.zip" . \
                 -x 'device.txt' -x 'version.txt' )
           done
           echo "VERSION=${version}" >> "$GITHUB_ENV"
@@ -149,7 +133,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="ksu-${VERSION}${DS_SUFFIX}-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          TAG="ksu-${VERSION}-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "$TAG" \
